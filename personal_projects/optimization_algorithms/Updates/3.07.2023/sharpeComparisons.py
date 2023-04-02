@@ -1,0 +1,439 @@
+import yfinance
+import datetime
+import pandas as pd
+import numpy as np
+import sympy
+from sympy import pprint
+from matplotlib import pyplot as plt
+import random
+from concurrent.futures import ThreadPoolExecutor
+from scipy.optimize import minimize
+import statistics
+import json
+from scipy import stats
+
+
+# Load list of assets:
+with open("all_assets.txt", "r") as f:
+    text = f.read()
+    all_assets = list(set(json.loads(text)))
+
+# tickers = all_assets[:500]
+
+analysisDate = 2013
+outSample = True
+
+
+def createData(tickers, dateRange, sampleType, portfolioSize):
+
+    if sampleType == "eval":
+        ticker_data = yfinance.download(
+            tickers,
+            start=datetime.datetime(dateRange, 1, 1),
+            end=datetime.datetime(dateRange + 1, 1, 1),
+            group_by="ticker",
+            actions=True,
+        )
+    elif sampleType:
+        ticker_data = yfinance.download(
+            tickers,
+            start=datetime.datetime(2010, 1, 1),
+            end=datetime.datetime(dateRange, 1, 1),
+            group_by="ticker",
+            actions=True,
+        )
+    else:
+        ticker_data = yfinance.download(
+            tickers,
+            start=datetime.datetime(2010, 1, 1),
+            end=datetime.datetime(dateRange + 1, 1, 1),
+            group_by="ticker",
+            actions=True,
+        )
+    # Create a new data frame and populate it with only the close columns
+    ticker_data_close = pd.DataFrame()
+
+    for n in tickers:
+        ticker_data_close[n] = ticker_data[(n, "Close")]
+
+    # Since some assets start earlier than others, we need to start at the point when all assets have data
+    earliest_date = []
+    tickers = []
+    # Give it another shuffle for good measure
+    for ticker in list(ticker_data_close):
+        if len(tickers) >= portfolioSize:
+            break
+        try:
+            if (
+                ticker_data_close[ticker].first_valid_index().date()
+                == ticker_data.index[0]
+            ):
+                temp_data = ticker_data_close[ticker].copy()
+                temp_data = temp_data.truncate(
+                    before=ticker_data_close[ticker].first_valid_index()
+                )
+                if temp_data.isna().sum() == 0:
+                    tickers.append(ticker)
+                    earliest_date.append(ticker_data_close[ticker].first_valid_index())
+        except Exception as e:
+            pass
+
+    ticker_data_close = ticker_data_close.truncate(before=max(earliest_date))
+    ticker_data = ticker_data.truncate(before=max(earliest_date))
+
+    # Convert dollar changes to percent changes and drop the first row
+    ticker_data_percent = ticker_data_close.pct_change(1)
+    ticker_data_percent.drop(ticker_data_percent.index[0], inplace=True)
+
+    # Add cash column
+    ticker_data_percent["Cash"] = np.zeros((len(ticker_data_percent), 1))
+    if "SPY" in tickers:
+        tickerCopy = tickers.copy()
+    else:
+        tickerCopy = tickers.copy() + ["SPY"]
+
+    # Add dividends
+    for ticker in tickerCopy:
+        dividend_history = ticker_data[(ticker, "Dividends")]
+        if len(dividend_history) == 0:
+            continue
+        dividend_history = dividend_history.reindex_like(ticker_data_percent).fillna(0)
+        ticker_data_percent[ticker] = ticker_data_percent[
+            ticker
+        ] + dividend_history / np.array(ticker_data[(ticker, "Close")][:-1])
+
+    return ticker_data_percent
+
+
+savedSolutions = {}
+while analysisDate <= 2022:
+    print(analysisDate)
+    tickers = [
+        "CRL",
+        "CRI",
+        "CCK",
+        "PKG",
+        "VLY",
+        "WSM",
+        "FORM",
+        "WWD",
+        "ABG",
+        "PLXS",
+    ]
+    tickers.append("SPY")
+
+    ticker_data_percent = createData(tickers, analysisDate, outSample, 10)
+
+    # ---------------------- #
+
+    # The sympy math starts here
+
+    # Subset of ticker list, in case you want to exclude some tickers from the main list.
+    asset_names = tickers + ["Cash"]
+    length_of_assets = len(asset_names)
+
+    covariance_matrix = ticker_data_percent[asset_names].cov()
+    # pprint("Covariance Matrix: ")
+    # pprint(covariance_matrix)
+    # pprint("---------------")
+
+    # Create list of sympy symbols for each weight and our two constraints
+    equation_variables = []
+    for ticker_position in range(length_of_assets):
+        equation_variables.append(sympy.Symbol("w" + str(ticker_position), real=True))
+
+    # Isolate the variables representing the asset weights
+    asset_weights = []
+    for n in range(0, length_of_assets):
+        asset_weights.append(equation_variables[n])
+
+    # Reshape the matrix to be vertical. -1 indicates that the rows should be whatever value fits as long as the columns is 1.
+    asset_weights = np.array(asset_weights).reshape(-1, 1)
+
+    # I'm building asset weight constraint into the main function
+    # Copy the weights into new list while Im altering the original
+    weights_copy = asset_weights.copy()
+    for position in range(len(weights_copy)):
+        asset_weights[position] = weights_copy[position] / sum(abs(weights_copy))
+
+    asset_weights_T = np.transpose(asset_weights)
+
+    # Portfolio variance function, main function to minimize
+    portfolio_variance = asset_weights_T @ covariance_matrix @ asset_weights
+    portfolio_variance = portfolio_variance[0][0]  # Strip outer brackets
+
+    # pprint("Variance function: ")
+    # pprint(portfolio_variance)
+    # pprint("---------------")
+
+    # Calculate an array of corresponding average daily returns based off of the columns of the data table.
+    expected_asset_returns = np.array(
+        ticker_data_percent.mean(axis=0)[asset_names]
+    ).reshape(-1, 1)
+    # pprint("Expected Returns: " + str(expected_asset_returns))
+    # pprint("---------------")
+
+    target_portfolio_returns = (
+        ticker_data_percent.mean(axis=0)["SPY"] * 0.5
+    )  # Set target return
+    # pprint("Target Return: " + str(target_portfolio_returns))
+    # pprint("---------------")
+
+    # Constraint 1: The sum of each weight multiplied with its corresponding return must equal our target return
+    portfolio_returns_constraint = asset_weights_T @ expected_asset_returns
+    portfolio_returns_constraint = portfolio_returns_constraint[0][0]
+    # pprint("Portfolio return must meet target: ")
+    # pprint(portfolio_returns_constraint)
+    # pprint("---------------")
+
+    returnTarget = sympy.lambdify(
+        equation_variables,
+        portfolio_returns_constraint,
+        "numpy",
+    )
+
+    # Inequality, violations are negative
+    def returnsConstraint(x):
+        return returnTarget(*x) - target_portfolio_returns
+
+    constraints = [
+        {"type": "ineq", "fun": returnsConstraint},
+    ]
+
+    # Maximize by minimizing the negative
+    sharpe_function = (
+        -1 * 252 ** 0.5 * portfolio_returns_constraint / portfolio_variance ** 0.5
+    )
+
+    objectiveFunction = sympy.lambdify(
+        equation_variables,
+        sharpe_function,
+        "numpy",
+    )
+
+    def objective(x):
+        return objectiveFunction(*x)
+
+    solutions = []
+
+    counter = 0
+
+    class outputSolution:
+        def __init__(
+            self,
+            solution,
+            returns,
+            volatility,
+        ):
+            self.solutionVector = solution
+            self.volatility = volatility
+            self.returns = returns
+            self.sharpe = self.returns / self.volatility
+
+    def solve_equation():
+        global counter
+        guess = list(random.uniform(0, 10000) for a in range(length_of_assets))
+        solution = minimize(objective, guess, constraints=constraints).x
+        subs = {}
+        for variable in range(len(equation_variables)):
+            subs[equation_variables[variable]] = solution[variable]
+
+        solutions.append(
+            outputSolution(
+                solution,
+                portfolio_returns_constraint.evalf(subs=subs) * 252,
+                portfolio_variance.evalf(subs=subs) ** 0.5 * 252 ** 0.5,
+            )
+        )
+        counter += 1
+
+    with ThreadPoolExecutor(max_workers=100) as executor:
+        futures = [executor.submit(solve_equation) for n in range(100)]
+        # Wait for all tasks to complete and retrieve their results
+        for future in futures:
+            future.result()
+
+    # Don't forget to switch the inequality depending on sorting metric
+    bestPick = solutions[0]
+    for solution in solutions:
+        if solution.sharpe > bestPick.sharpe:
+            bestPick = solution
+
+    solution = bestPick.solutionVector
+    # Convert to percentages
+    solution = list(sol / sum(abs(val) for val in solution) for sol in solution)
+
+    # Append solution to my amazing list
+    try:
+        savedSolutions[analysisDate].append(solution)
+    except:
+        savedSolutions[analysisDate] = [solution]
+
+    if not outSample:
+        analysisDate += 1
+    outSample = not outSample
+
+globalInSample = []
+globalOutSample = []
+
+with open("stratifiedSharpes.txt", "r") as f:
+    stratifiedSharpes = json.load(f, parse_int=int)
+
+# Need to convert string key to int
+for key in list(stratifiedSharpes.keys()):
+    stratifiedSharpes[int(key)] = stratifiedSharpes.pop(key)
+
+
+for dateRange in list(savedSolutions.keys()):
+    tickers = [
+        "CRL",
+        "CRI",
+        "CCK",
+        "PKG",
+        "VLY",
+        "WSM",
+        "FORM",
+        "WWD",
+        "ABG",
+        "PLXS",
+    ]
+    tickers.append("SPY")
+
+    ticker_data_percent = createData(tickers, dateRange, "eval", 10)
+
+    outOfSample = savedSolutions[dateRange][0]
+    backtestOut = pd.concat(
+        [ticker_data_percent, ticker_data_percent[asset_names] @ outOfSample], axis=1
+    )
+    backtestOut.rename({0: "Optimal_Portfolio"}, axis=1, inplace=True)
+
+    inSample = savedSolutions[dateRange][1]
+    backtestIn = pd.concat(
+        [ticker_data_percent, ticker_data_percent[asset_names] @ inSample], axis=1
+    )
+    backtestIn.rename({0: "Optimal_Portfolio"}, axis=1, inplace=True)
+
+    # Create an equal weights portfolio for comparison, excluding cash
+    equal_weights = [1 / (length_of_assets - 1) for n in range(length_of_assets - 1)]
+    equal_weights.append(0)
+
+    # Concat the equal weights portfolio
+    backtestIn = pd.concat(
+        [backtestIn, ticker_data_percent[asset_names] @ equal_weights], axis=1
+    )
+    backtestIn.rename({0: "Equal_Weights"}, axis=1, inplace=True)
+
+    # Plot SPY returns
+    plt.plot(
+        backtestIn.index, (ticker_data_percent["SPY"] + 1).cumprod() - 1, label="SPY"
+    )
+
+    # Plot In Sample
+    plt.plot(
+        backtestIn.index,
+        (backtestIn["Optimal_Portfolio"] + 1).cumprod() - 1,
+        label="In Sample Portfolio",
+    )
+
+    # Plot out of sample
+    plt.plot(
+        backtestOut.index,
+        (backtestOut["Optimal_Portfolio"] + 1).cumprod() - 1,
+        label="Out of Sample Portfolio",
+    )
+
+    # Plot equal weights portfolio
+    plt.plot(
+        backtestIn.index,
+        (backtestIn["Equal_Weights"] + 1).cumprod() - 1,
+        label="Equal Weights",
+    )
+
+    plt.legend()
+    plt.xlabel("Decimal Returns (% * 100)")
+    plt.ylabel("Date")
+    plt.show()
+
+    # Calculate pvalues and trailing sharpe ratios:
+    trailingSharpeIn = []
+    trailingSharpeOut = []
+
+    pvalues = []
+    # Start with 1 to prevent 0 std dev in denominator
+    for index in range(50, len(backtestIn.index)):
+        # Scale down my sharpes for in sample to set a more realistic comparison
+        trailingSharpeIn.append(
+            1
+            * statistics.mean(backtestIn["Optimal_Portfolio"][0:index])
+            / statistics.pstdev(backtestIn["Optimal_Portfolio"][0:index])
+        )
+
+        trailingSharpeOut.append(
+            statistics.mean(backtestOut["Optimal_Portfolio"][0:index])
+            / statistics.pstdev(backtestOut["Optimal_Portfolio"][0:index])
+        )
+
+    # Scale my sharpes to annual values
+    trailingSharpeIn = np.array(trailingSharpeIn) * 252 ** 0.5
+    trailingSharpeOut = np.array(trailingSharpeOut) * 252 ** 0.5
+
+    globalInSample.extend(trailingSharpeIn)
+    globalOutSample.extend(trailingSharpeOut)
+
+    stratifiedSharpes[dateRange][0].extend(trailingSharpeIn)
+    stratifiedSharpes[dateRange][1].extend(trailingSharpeOut)
+
+with open("inSharpes.txt", "r") as f:
+    savedInSharpes = json.load(f)
+with open("outSharpes.txt", "r") as f:
+    savedOutSharpes = json.load(f)
+
+
+globalInSample.extend(savedInSharpes)
+globalOutSample.extend(savedOutSharpes)
+
+sharpeDiffs = np.array(globalInSample) - np.array(globalOutSample)
+print(len(sharpeDiffs))
+print("Sharpe diff means: " + str(statistics.mean(sharpeDiffs)))
+print("Sharpe diff std dev: " + str(statistics.pstdev(sharpeDiffs)))
+plt.hist(sharpeDiffs, bins=200)
+plt.show()
+
+
+# Run paired test on the sharpe differences. Test if in sample is greater than out of sample
+p_value = stats.ttest_rel(
+    globalInSample,
+    globalOutSample,
+    alternative="greater",
+)[1]
+print("Paired test, in greater than out p_value: " + str(p_value))
+
+with open("inSharpes.txt", "w") as f:
+    json.dump(globalInSample, f)
+
+with open("outSharpes.txt", "w") as f:
+    json.dump(globalOutSample, f)
+
+# Stratified differences by year
+for dateRange in list(stratifiedSharpes.keys()):
+    sharpeDiffs = np.array(stratifiedSharpes[dateRange][0]) - np.array(
+        stratifiedSharpes[dateRange][1]
+    )
+    print(len(sharpeDiffs))
+    print("Sharpe diff means: " + str(statistics.mean(sharpeDiffs)))
+    print("Sharpe diff std dev: " + str(statistics.pstdev(sharpeDiffs)))
+    plt.hist(sharpeDiffs, bins=150)
+    plt.title(dateRange)
+    plt.show()
+
+    # Run paired test on the sharpe differences. Test if in sample is greater than out of sample
+    p_value = stats.ttest_rel(
+        stratifiedSharpes[dateRange][0],
+        stratifiedSharpes[dateRange][1],
+        alternative="greater",
+    )[1]
+    print(str(dateRange) + " paired test, in greater than out p_value: " + str(p_value))
+
+
+with open("stratifiedSharpes.txt", "w") as f:
+    json.dump(stratifiedSharpes, f)
