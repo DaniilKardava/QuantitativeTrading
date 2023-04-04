@@ -12,7 +12,7 @@ I hard coded the model inputs into the class. They can be changed by altering th
 The minute data provided above is only a small subset of what the model was trained on. It is padded with a repeating value where data is missing. 
 </br>
 </br>
-Once again, my understanding of some of the functions are rather limited, so the code is likely inneficient, and the comments are not very enlightening. 
+Once again, my understanding of some of the functions are rather limited, so the code is likely inefficient, and the comments are not very enlightening. 
 </br>
 </br>
 Below is the performance of model number 3 million. 
