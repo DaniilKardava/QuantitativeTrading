@@ -1,5 +1,7 @@
 # Under construction:
 
+## Model performance and code can be found in the modelCode folder. 
+
 I'll start off by saying that trying to systematically train and validate my models has been a complete disaster. The difference in performance is incredibly difficult to attribute to a single change, and in all honesty I have made so many mistakes along the way that starting from the complete beginning seems like the only option. As of this moment, my understanding of these algorithms does not go far beyond the concept of gradient descent taught in a third semester calculus course. My understanding of statistics and linear algebra is mediocre. 
 
 I didn't have much interest in analyzing large timeframes since I was relatively confident they were driven more by macro news than some voodoo patterns, but I was curious whether there was some pattern to intraday price movements. 
