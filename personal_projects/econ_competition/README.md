@@ -7,8 +7,6 @@ The first issue was a fixed 7% fee on all short positions. The fact that this va
 
 The second issue was spreads. While the game received quotes directly from Tradingview, and mimicked the market spreads, they seemed to rely on a single quote for orders qued in after hours and filled at open. 
 
-I'll get one thing out of the way. I was convinced that the game filled after hour orders at the exact open quote. I was wrong. Unfortunately I didn't figure that out until I had committed to running the overnight capture strategy for 3 days, and incurred some serious losses. 
-
 The short strategy keeps a portfolio of the top 20 candidates with the higherst borrowing rates as indicated on Interactive Brokers, that also meet the game criteria of 25 million market cap and 3 dollar share price. 
 
 Because calculations are done in after hours, and transactions are qued for open, the next replacements are not qued until after hours the next day. This is because I want to avoid any unecessary problems with cash balance. I will not send in new orders until I know the amounts for which the previous ones settled for. 
