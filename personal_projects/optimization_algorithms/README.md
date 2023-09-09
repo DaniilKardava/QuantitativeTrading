@@ -1,5 +1,3 @@
-## The majority of my research has been recorded in the "Updates" folder. Improved code has also been provided.
-
 ## Summary
 
 This folder contains code to minimize portfolio volatility with constraints on percentage allocation and minimum returns. 
