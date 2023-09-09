@@ -1,5 +1,3 @@
-# Under construction:
-
 Overnight sessions, though minor in volume relative to day sessions, carry surprising significance. 
 </br>
 </br>
